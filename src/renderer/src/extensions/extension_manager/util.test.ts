@@ -1,7 +1,10 @@
 import { describe, expect, it, vi } from "vitest";
 
+import { log } from "@/logging";
+
 import { makeApiHarness, makeAvailableExtension, makeDownload } from "../../test-utils/builders";
 import type { IExtensionApi } from "../../types/IExtensionContext";
+import { ProcessCanceled } from "../../util/CustomErrors";
 import { fetchExtensionList } from "./availableExtensions";
 import installExtension from "./installExtension";
 import { downloadAndInstallExtension, selectorMatch } from "./util";
@@ -22,6 +25,11 @@ vi.mock("../nexus_integration/util", () => ({
 vi.mock("../download_management/selectors", () => ({
   downloadPathForGame: () => "C:/downloads/site",
 }));
+
+vi.mock("@/logging", () => {
+  const log = vi.fn();
+  return { default: log, log };
+});
 
 describe("selectorMatch", () => {
   const ext = makeAvailableExtension({ modId: 42, fileId: 7 });
@@ -107,5 +115,57 @@ describe("downloadAndInstallExtension", () => {
 
     expect(result).toBe(false);
     expect(emitAndAwait).not.toHaveBeenCalled();
+  });
+
+  // The outer catch reports a failure either way, so what distinguishes a handled miss from the
+  // crash is the error that reaches it: a ProcessCanceled naming the extension, not a TypeError
+  // from reading localPath off nothing.
+  function loggedInstallError(): Error | undefined {
+    const call = vi
+      .mocked(log)
+      .mock.calls.find(([, message]) => message === "error installing extension");
+    return call?.[2] as Error | undefined;
+  }
+
+  it("fails cleanly when the download id has no record", async () => {
+    // a record can be swept out from under a download that is still completing
+    const harness = makeApiHarness();
+    harness.api.emitAndAwait = vi.fn(async () => [
+      "dl-1",
+    ]) as unknown as IExtensionApi["emitAndAwait"];
+    vi.mocked(installExtension).mockClear();
+    vi.mocked(log).mockClear();
+
+    const result = await downloadAndInstallExtension(harness.api, {
+      name: "Some Extension",
+      modId: 42,
+      fileId: 7,
+    });
+
+    expect(result).toBe(false);
+    expect(vi.mocked(installExtension)).not.toHaveBeenCalled();
+    expect(harness.dialogCalls).toHaveLength(1);
+    expect(loggedInstallError()).toBeInstanceOf(ProcessCanceled);
+    expect(loggedInstallError()?.message).toContain("Some Extension");
+  });
+
+  it("fails cleanly when the download handler resolves no id", async () => {
+    // several onNexusDownload branches resolve undefined rather than rejecting
+    const harness = makeApiHarness();
+    harness.api.emitAndAwait = vi.fn(async () => [
+      undefined,
+    ]) as unknown as IExtensionApi["emitAndAwait"];
+    vi.mocked(installExtension).mockClear();
+    vi.mocked(log).mockClear();
+
+    const result = await downloadAndInstallExtension(harness.api, {
+      name: "Some Extension",
+      modId: 42,
+      fileId: 7,
+    });
+
+    expect(result).toBe(false);
+    expect(vi.mocked(installExtension)).not.toHaveBeenCalled();
+    expect(loggedInstallError()).toBeInstanceOf(ProcessCanceled);
   });
 });

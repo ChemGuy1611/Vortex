@@ -29,7 +29,7 @@ import getNormalizeFunc from "../../util/getNormalizeFunc";
 import * as selectors from "../../util/selectors";
 import { knownGames } from "../../util/selectors";
 import { getSafe } from "../../util/storeHelper";
-import { batchDispatch, toPromise, truthy } from "../../util/util";
+import { toPromise, truthy } from "../../util/util";
 import { convertGameIdReverse } from "../nexus_integration/util/convertGameId";
 import {
   addLocalDownload,
@@ -53,6 +53,7 @@ import getDownloadGames from "./util/getDownloadGames";
 import { finalizeDownload } from "./util/postprocessDownload";
 import queryInfo from "./util/queryDLInfo";
 import { refreshDownloads } from "./util/refreshDownloads";
+import removeInvalidDownloads from "./util/removeInvalidDownloads";
 import setDownloadGames from "./util/setDownloadGames";
 import type { IDownloadViewProps } from "./views/DownloadView";
 import DownloadView from "./views/DownloadView";
@@ -199,55 +200,6 @@ function watchDownloads(
       allowReport: false,
     });
   }
-}
-
-async function removeInvalidDownloads(api: IExtensionApi, gameId?: string) {
-  const state: IState = api.store.getState();
-  gameId = gameId || selectors.activeGameId(state);
-  if (!gameId) {
-    return;
-  }
-  const downloadPath = selectors.downloadPathForGame(state, gameId);
-  const downloads: { [id: string]: IDownload } = state.persistent.downloads.files;
-
-  const incomplete = Object.keys(downloads).filter(
-    (dlId) =>
-      ["finished", "paused", "failed"].includes(downloads[dlId].state) &&
-      (!downloads[dlId].localPath || downloads[dlId].received === 0 || downloads[dlId].size === 0),
-  );
-  const invalid = Object.keys(downloads).filter(
-    (dlId) =>
-      ["finished", "failed"].includes(downloads[dlId].state) &&
-      downloads[dlId].localPath &&
-      !path.extname(downloads[dlId].localPath),
-  );
-  const removeSet = new Set<string>(incomplete.concat(invalid));
-
-  const toRemove: string[] = [];
-  const repairActions: Array<ReturnType<typeof downloadProgress>> = [];
-
-  await Promise.all(
-    Array.from(removeSet).map(async (dlId) => {
-      if (downloads[dlId].localPath === undefined) {
-        toRemove.push(dlId);
-        return;
-      }
-      const filePath = path.join(downloadPath, downloads[dlId].localPath);
-      const stats = await fs.statAsync(filePath).catch(() => undefined);
-      if (stats?.size > 0) {
-        // file exists and is valid on disk - repair the state instead of deleting
-        repairActions.push(downloadProgress(dlId, stats.size, stats.size, undefined));
-      } else {
-        // file genuinely missing or empty - safe to clean up
-        await fs.removeAsync(filePath).catch(() => null);
-        toRemove.push(dlId);
-      }
-    }),
-  );
-  batchDispatch(api.store, [
-    ...repairActions,
-    ...toRemove.map((dlId) => removeDownloadSilent(dlId)),
-  ]);
 }
 
 function removeInvalidFileExts(api: IExtensionApi, gameId?: string) {

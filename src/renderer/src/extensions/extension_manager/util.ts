@@ -105,6 +105,13 @@ export async function downloadAndInstallExtension(
 
     const downloadId = downloadIds[0];
     const download = api.getState().persistent.downloads.files[downloadId];
+    if (download === undefined) {
+      // the nexus handler resolves undefined on several non-fatal paths (user canceled, an
+      // already-downloaded file whose record couldn't be matched), and a record can also be
+      // dropped while the download is still completing. Either way there is no archive to install,
+      // and reading localPath off it would surface as an unhandled TypeError.
+      throw new ProcessCanceled(`No download record for extension ${ext.name}`);
+    }
 
     api.store.dispatch(setDownloadModInfo(downloadId, "internal", true));
 
